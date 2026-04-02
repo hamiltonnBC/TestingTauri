@@ -10,6 +10,8 @@ jobs:
   build-pi:
     name: Build Linux ARM64 (.deb for Raspberry Pi)
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write   # required to create GitHub Releases and upload artifacts
 
     steps:
       # ── 1. Download the repo code ────────────────────────────────────────────
