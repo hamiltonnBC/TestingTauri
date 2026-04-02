@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
-use tauri::State;
+use tauri::{Manager, State};
 use serde::{Serialize, Deserialize};
 use axum::{
     routing::get,
@@ -100,38 +100,48 @@ async fn serve_uploader() -> Html<&'static str> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let conn = Connection::open("timeline.db").expect("Failed to open local database");
-    
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS events (
-            id INTEGER PRIMARY KEY,
-            event_date TEXT NOT NULL,
-            title TEXT NOT NULL,
-            description TEXT NOT NULL,
-            image_url TEXT NOT NULL
-        )",
-        [],
-    ).expect("Failed to create events table");
-
-    let shared_db = Arc::new(Mutex::new(conn));
-
-    // Spawn the Axum server
-    let axum_db = shared_db.clone();
-    tauri::async_runtime::spawn(async move {
-        let app = Router::new()
-            .route("/", get(serve_uploader))
-            .route("/api/events", get(api_get_events).post(api_add_event))
-            .with_state(axum_db)
-            .layer(CorsLayer::permissive());
-
-        let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
-        println!("🚀 Local Kiosk Server listening on http://0.0.0.0:8080");
-        axum::serve(listener, app).await.unwrap();
-    });
-
     tauri::Builder::default()
-        .manage(AppState {
-            db: shared_db,
+        .setup(|app| {
+            // Determine the safe local data directory for this app depending on OS
+            let app_data_dir = app.path().app_data_dir().expect("Failed to get app data dir");
+            std::fs::create_dir_all(&app_data_dir).expect("Failed to create app data dir");
+            let db_path = app_data_dir.join("timeline.db");
+            
+            let conn = Connection::open(db_path).expect("Failed to open local database");
+            
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS events (
+                    id INTEGER PRIMARY KEY,
+                    event_date TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    image_url TEXT NOT NULL
+                )",
+                [],
+            ).expect("Failed to create events table");
+
+            let shared_db = Arc::new(Mutex::new(conn));
+            
+            // Manage state for Tauri UI boundaries
+            app.manage(AppState {
+                db: shared_db.clone(),
+            });
+
+            // Spawn the Axum server
+            let axum_db = shared_db.clone();
+            tauri::async_runtime::spawn(async move {
+                let axum_app = Router::new()
+                    .route("/", get(serve_uploader))
+                    .route("/api/events", get(api_get_events).post(api_add_event))
+                    .with_state(axum_db)
+                    .layer(CorsLayer::permissive());
+
+                let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
+                println!("🚀 Local Kiosk Server listening on http://0.0.0.0:8080");
+                axum::serve(listener, axum_app).await.unwrap();
+            });
+            
+            Ok(())
         })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![get_events])
